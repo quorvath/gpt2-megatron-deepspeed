@@ -1,5 +1,7 @@
 ## BCD
 We have incorporated the block coordinate descent method for training large-scale models, which saves GPU memory by freezing parameters and adjusting the optimizer. Enable this feature with the --train-block argument, and set the proportion of frozen parameters using --num-group. Currently, this method only supports FP32 training; FP16 and BF16 modes are still being adjusted.
+
+Here is the original README content from the megatron-deepspeed project:
 ## Latest News
 * [2023/07] Synced with [upstream](https://github.com/NVIDIA/Megatron-LM) over 1k commits, see [rebase folder for more details](https://github.com/deepspeedai/Megatron-DeepSpeed/tree/main/examples_deepspeed/rebase) in terms of features and updated performance.
 
