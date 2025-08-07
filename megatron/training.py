@@ -1154,7 +1154,7 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
             sys.exit()
         if args.trainblock:
             lm_loss = loss_dict['lm loss'].item()
-            if prev_lm_loss is not None and abs(prev_lm_loss - lm_loss) < 0.5:
+            if prev_lm_loss is not None and abs(prev_lm_loss - lm_loss) < 0.00005:
                 args.group_idx = (args.group_idx + 1) % num_groups  # 切换到下一个 group
                 print_rank_0(f"Loss difference < 0.00005 at iteration {iteration},change group {args.group_idx}...")
                 update_requires_grad(model, transformer_layers, groups, args.group_idx)
@@ -1162,17 +1162,17 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
             # 更新上一轮的 loss
             prev_lm_loss = lm_loss
         
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / (1024 * 1024)
-            reserved = torch.cuda.memory_reserved() / (1024 * 1024)
-            max_allocated = torch.cuda.max_memory_allocated() / (1024 * 1024)
-            max_reserved = torch.cuda.max_memory_reserved() / (1024 * 1024)
+        # if torch.cuda.is_available():
+        #     allocated = torch.cuda.memory_allocated() / (1024 * 1024)
+        #     reserved = torch.cuda.memory_reserved() / (1024 * 1024)
+        #     max_allocated = torch.cuda.max_memory_allocated() / (1024 * 1024)
+        #     max_reserved = torch.cuda.max_memory_reserved() / (1024 * 1024)
 
-            print_rank_0(f"显存使用情况(MB) | "
-                        f"allocated: {allocated:.2f} | "
-                        f"max allocated: {max_allocated:.2f} | "
-                        f"reserved: {reserved:.2f} | "
-                        f"max reserved: {max_reserved:.2f}")
+        #     print_rank_0(f"显存使用情况(MB) | "
+        #                 f"allocated: {allocated:.2f} | "
+        #                 f"max allocated: {max_allocated:.2f} | "
+        #                 f"reserved: {reserved:.2f} | "
+        #                 f"max reserved: {max_reserved:.2f}")
     return iteration
 
 
