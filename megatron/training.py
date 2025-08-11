@@ -23,7 +23,7 @@ import time
 import json
 # The earliest we can measure the start time.
 _TRAIN_START_TIME = time.time()
-
+import gc
 import torch
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 
@@ -907,13 +907,38 @@ def update_requires_grad(model, transformer_layers, groups, group_idx):
         optimizer.optimizer.state.clear()
         optimizer.optimizer.add_param_group(new_param_group)
 
+        optimizer.fp16_groups.clear()
+        optimizer.fp16_groups_flat.clear()
+        optimizer.fp32_groups_flat.clear()
+
+        if hasattr(optimizer, "flatten_grad_norm_mask_list"):
+            optimizer.flatten_grad_norm_mask_list.clear()
+        if hasattr(optimizer, "has_executed_step"):
+            optimizer.has_executed_step = False
+        if hasattr(optimizer, "_global_grad_norm"):
+            optimizer._global_grad_norm = 0.0
+
+        for i, pg in enumerate(optimizer.optimizer.param_groups):
+            optimizer.fp16_groups.append(pg['params'])
+
+            flat_fp16 = _flatten_dense_tensors([p.clone().detach() for p in optimizer.fp16_groups[i]])
+            optimizer.fp16_groups_flat.append(flat_fp16)
+
+            updated = _unflatten_dense_tensors(flat_fp16, optimizer.fp16_groups[i])
+            for p, q in zip(optimizer.fp16_groups[i], updated):
+                p.data = q.data
+
+            flat_fp32 = flat_fp16.clone().float().detach()
+            flat_fp32.requires_grad = True
+            optimizer.fp32_groups_flat.append(flat_fp32)
+
+            pg['params'] = [flat_fp32]
+
         optimizer.initialize_optimizer_states()
-        # optimizer.state.clear()
-        # real_optimizer = optimizer.optimizer 
-        # real_optimizer.state.clear()
-        # optimizer.initialize_optimizer_states()
-        # optimizer.has_executed_step = False
     elif args.bf16:
+        if hasattr(optimizer, "destroy"):
+            optimizer.destroy()
+
         new_param_group = {"params": list(params_to_train)}
 
         optimizer.bf16_groups.clear()
@@ -929,41 +954,20 @@ def update_requires_grad(model, transformer_layers, groups, group_idx):
         optimizer.fp32_groups_has_gradients.clear()
         optimizer.group_paddings.clear()
 
+        if hasattr(optimizer, "non_expert_gradients"):
+            optimizer.non_expert_gradients.clear()
+        if hasattr(optimizer, "expert_gradients"):
+            optimizer.expert_gradients.clear()
+        optimizer._hp_optimizer_states_linked = False
+        optimizer._grad_acc_hooks = []
+
         optimizer.optimizer.param_groups.clear()
         optimizer.optimizer.state.clear()
         optimizer.optimizer.add_param_group(new_param_group)
         
         optimizer._setup_for_real_optimizer()
-
-    #     if base_optimizer.param_groups:
-    #         base_group = base_optimizer.param_groups[0]
-    #         new_group = {k: v for k, v in base_group.items() if k != 'params'}
-    #         new_group['params'] = params_to_train
-    #     else:
-    #         new_group = {
-    #             'params': params_to_train,
-    #             'bias_correction': True,
-    #             'betas': (0.9, 0.95),
-    #             'eps': 1e-8,
-    #             'weight_decay': 1e-5,
-    #             'step': 1,
-    #         }
-
-    #     optimizer._set_param_groups([new_group])
-
-    #     keep_ids = {id(p) for p in params_to_train}
-    #     keys_to_delete = [k for k in base_optimizer.state if id(k) not in keep_ids]
-    #     for k in keys_to_delete:
-    #         del base_optimizer.state[k]
-
-    #     optimizer.fp16_groups = [list(params_to_train)]
-
-    #     optimizer.fp32_groups_flat = [_flatten_dense_tensors([
-    #         p.data.float() for p in params_to_train
-    #     ])]
-    #     optimizer.fp16_groups_flat = [_flatten_dense_tensors([
-    #         p.data for p in params_to_train
-    #     ])]
+    gc.collect()
+    torch.cuda.empty_cache()
 
 def train(forward_step_func, model, optimizer, lr_scheduler,
           train_data_iterator, valid_data_iterator):
@@ -1143,15 +1147,6 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
                                              lr_scheduler)
                 print_datetime('exiting program after {} minutes'.format(train_time))
                 sys.exit()
-
-        # Exiting based on iterations
-        if args.exit_interval and iteration % args.exit_interval == 0:
-            if not saved_checkpoint:
-                save_checkpoint_and_time(iteration, model, optimizer,
-                                         lr_scheduler)
-            torch.distributed.barrier()
-            print_datetime('exiting program at iteration {}'.format(iteration))
-            sys.exit()
         if args.trainblock:
             lm_loss = loss_dict['lm loss'].item()
             if prev_lm_loss is not None and abs(prev_lm_loss - lm_loss) < 0.00005:
@@ -1162,6 +1157,15 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
             # 更新上一轮的 loss
             prev_lm_loss = lm_loss
         
+        # Exiting based on iterations
+        if args.exit_interval and iteration % args.exit_interval == 0:
+            if not saved_checkpoint:
+                save_checkpoint_and_time(iteration, model, optimizer,
+                                         lr_scheduler)
+            torch.distributed.barrier()
+            print_datetime('exiting program at iteration {}'.format(iteration))
+            sys.exit()
+
         # if torch.cuda.is_available():
         #     allocated = torch.cuda.memory_allocated() / (1024 * 1024)
         #     reserved = torch.cuda.memory_reserved() / (1024 * 1024)
